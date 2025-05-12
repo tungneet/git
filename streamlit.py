@@ -105,5 +105,4 @@ else:
 
             asyncio.run(process_audio())
 
-    if __name__ == "__main__":
-        main()
+    main()
