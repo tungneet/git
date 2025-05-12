@@ -1,108 +1,88 @@
-import asyncio
 import streamlit as st
+import asyncio
+import os
+import tempfile
 from openai import AsyncOpenAI
 from openai.helpers import LocalAudioPlayer
-import tempfile
-import os
-import numpy as np
-import scipy.io.wavfile as wavfile
-from streamlit_webrtc import webrtc_streamer, AudioProcessorBase, WebRtcMode
 
-# ✅ This must come before any other Streamlit commands
+# Set Streamlit page configuration
 st.set_page_config(page_title="🗣️ Hinglish Voice Chatbot", layout="centered")
 
-# Streamlit UI for OpenAI Key input
+# Title and description
+st.title("🗣️ Hinglish Voice Chatbot")
+st.write("Upload a `.wav` file (16kHz mono PCM), and the bot will transcribe and respond in Hinglish.")
+
+# Input for OpenAI API Key
 openai_key = st.text_input("Enter your OpenAI API key:", type="password")
 
+# Check if API key is provided
 if not openai_key:
-    st.warning("Please enter an OpenAI API key to proceed.")
-else:
-    client = AsyncOpenAI(api_key=openai_key)
+    st.warning("Please enter your OpenAI API key to proceed.")
+    st.stop()
 
-    SAMPLE_RATE = 16000
-    THRESHOLD = 1000
-    SILENCE_DURATION = 1.5
+# Initialize OpenAI client
+client = AsyncOpenAI(api_key=openai_key)
 
-    # Define the WebRTC Audio Processor
-    class AudioProcessor(AudioProcessorBase):
-        def recv(self, frame):
-            # Process the audio frames
-            audio_data = np.frombuffer(frame.to_bytes(), dtype=np.int16)
-            return audio_data
+# File uploader for audio files
+uploaded_file = st.file_uploader("Upload your voice recording", type=["wav"])
 
-    # Record audio using WebRTC
-    def record_audio():
-        audio_processor = AudioProcessor()
-        webrtc_streamer(
-            key="audio_input",
-            mode=WebRtcMode.SENDRECV,
-            audio_processor_factory=lambda: audio_processor,
+# Function to transcribe audio using Whisper
+async def transcribe_audio(file_path):
+    with open(file_path, "rb") as audio_file:
+        transcript = await client.audio.transcriptions.create(
+            file=audio_file,
+            model="whisper-1",
+            response_format="text"
         )
+    return transcript.strip()
 
-        return audio_processor.recv
+# Function to generate a response using GPT-4
+async def generate_response(prompt):
+    response = await client.chat.completions.create(
+        model="gpt-4",
+        messages=[
+            {"role": "system", "content": "You are a friendly Hinglish customer support agent."},
+            {"role": "user", "content": prompt}
+        ],
+    )
+    return response.choices[0].message.content.strip()
 
-    # Save to WAV file
-    def save_to_wav(audio_data):
-        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
-        wavfile.write(temp_file.name, SAMPLE_RATE, audio_data)
-        return temp_file.name
+# Function to convert text to speech and play it
+async def speak_text(text):
+    async with client.audio.speech.with_streaming_response.create(
+        model="tts-1",
+        voice="onyx",
+        input=text,
+        response_format="pcm"
+    ) as response:
+        await LocalAudioPlayer().play(response)
 
-    # Transcribe using Whisper
-    async def transcribe(file_path):
-        with open(file_path, "rb") as f:
-            transcript = await client.audio.transcriptions.create(
-                file=f,
-                model="whisper-1",
-                response_format="text"
-            )
-        return transcript.strip()
+# Process the uploaded audio file
+if uploaded_file is not None:
+    # Save the uploaded file to a temporary location
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_audio_file:
+        temp_audio_file.write(uploaded_file.read())
+        temp_audio_path = temp_audio_file.name
 
-    # Generate reply
-    async def generate_reply(prompt):
-        response = await client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "You are a friendly Hinglish customer support agent."},
-                {"role": "user", "content": prompt}
-            ],
-        )
-        return response.choices[0].message.content.strip()
+    # Display the uploaded audio file
+    st.audio(uploaded_file, format="audio/wav")
 
-    # Speak
-    async def speak(text):
-        async with client.audio.speech.with_streaming_response.create(
-            model="gpt-4o-mini-tts",
-            voice="onyx",
-            input=text,
-            instructions="Speak in Indian accent in Hinglish. Use natural, friendly tone.",
-            response_format="pcm"
-        ) as response:
-            await LocalAudioPlayer().play(response)
+    # Button to start processing
+    if st.button("Transcribe and Respond"):
+        with st.spinner("Processing..."):
+            try:
+                # Transcribe the audio
+                transcription = await transcribe_audio(temp_audio_path)
+                st.success(f"Transcription: {transcription}")
 
-    # Streamlit UI
-    def main():
-        st.title("🗣️ Hinglish Voice Chatbot")
-        st.write("Click the button and start talking. It will listen, respond, and speak back in Hinglish.")
+                # Generate a response
+                response = await generate_response(transcription)
+                st.info(f"🤖 Bot: {response}")
 
-        if st.button("🎤 Start Talking"):
-            with st.spinner("Recording... Speak now!"):
-                audio_data = record_audio()
-                wav_path = save_to_wav(audio_data)
-
-            async def process_audio():
-                try:
-                    user_input = await transcribe(wav_path)
-                    st.success(f"You said: {user_input}")
-
-                    reply = await generate_reply(user_input)
-                    st.info(f"🤖 Bot: {reply}")
-
-                    await speak(reply)
-                except Exception as e:
-                    st.error(f"Error: {e}")
-                finally:
-                    os.remove(wav_path)
-
-            asyncio.run(process_audio())
-
-    main()
+                # Speak the response
+                await speak_text(response)
+            except Exception as e:
+                st.error(f"An error occurred: {e}")
+            finally:
+                # Clean up the temporary file
+                os.remove(temp_audio_path)
