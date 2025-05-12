@@ -8,6 +8,9 @@ import numpy as np
 import scipy.io.wavfile as wavfile
 from streamlit_webrtc import webrtc_streamer, AudioProcessorBase, WebRtcMode
 
+# ✅ This must come before any other Streamlit commands
+st.set_page_config(page_title="🗣️ Hinglish Voice Chatbot", layout="centered")
+
 # Streamlit UI for OpenAI Key input
 openai_key = st.text_input("Enter your OpenAI API key:", type="password")
 
