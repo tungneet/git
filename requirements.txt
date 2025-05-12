@@ -1,0 +1,6 @@
+streamlit
+sounddevice
+numpy
+scipy
+openai
+streamlit-webrtc
