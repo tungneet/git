@@ -1,34 +1,52 @@
+import asyncio
+import sounddevice as sd
+import numpy as np
+import scipy.io.wavfile as wavfile
+import tempfile
+import os
 import streamlit as st
 from openai import AsyncOpenAI
 from openai.helpers import LocalAudioPlayer
-import tempfile
-import numpy as np
-import scipy.io.wavfile as wavfile
-import os
-import asyncio
-from st_audiorec import st_audiorec
 
-# ✅ Must be first Streamlit command
-st.set_page_config(page_title="🗣️ Hinglish Voice Chatbot", layout="centered")
+# Initialize OpenAI client
+client = AsyncOpenAI(api_key="add_key_here")
 
-# 🎤 Set sample rate
-SAMPLE_RATE = 44100  # st_audiorec uses 44100 Hz
+# Audio settings
+SAMPLE_RATE = 16000
+THRESHOLD = 1000  # adjust as needed
+SILENCE_DURATION = 1.5  # seconds of silence to stop recording
 
-# 🔑 OpenAI Key Input
-openai_key = st.text_input("Enter your OpenAI API key:", type="password")
-if not openai_key:
-    st.warning("Please enter an OpenAI API key to proceed.")
-    st.stop()
+# Detects silence to stop recording
+def record_until_silence():
+    st.write("🎤 Speak now...")
+    recording = []
+    silence_count = 0
+    block_size = 1024
 
-client = AsyncOpenAI(api_key=openai_key)
+    with sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype='int16') as stream:
+        while True:
+            block, _ = stream.read(block_size)
+            volume = np.linalg.norm(block)
+            recording.append(block)
 
-# 📥 Save audio to WAV
-def save_to_wav(audio_data: np.ndarray):
+            if volume < THRESHOLD:
+                silence_count += block_size / SAMPLE_RATE
+                if silence_count >= SILENCE_DURATION:
+                    break
+            else:
+                silence_count = 0
+
+    audio = np.concatenate(recording, axis=0)
+    st.write("🔇 Recording stopped.")
+    return audio
+
+# Save numpy audio to temp WAV file
+def save_to_wav(audio_data):
     temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
     wavfile.write(temp_file.name, SAMPLE_RATE, audio_data)
     return temp_file.name
 
-# 🧠 Transcribe audio
+# Transcribe using Whisper
 async def transcribe(file_path):
     with open(file_path, "rb") as f:
         transcript = await client.audio.transcriptions.create(
@@ -38,7 +56,7 @@ async def transcribe(file_path):
         )
     return transcript.strip()
 
-# 💬 Generate GPT response
+# Generate Hinglish reply using GPT-4o-mini
 async def generate_reply(prompt):
     response = await client.chat.completions.create(
         model="gpt-4o-mini",
@@ -49,41 +67,37 @@ async def generate_reply(prompt):
     )
     return response.choices[0].message.content.strip()
 
-# 🔊 Speak out response
+# Speak with OpenAI TTS
 async def speak(text):
     async with client.audio.speech.with_streaming_response.create(
         model="gpt-4o-mini-tts",
-        voice="onyx",
+        voice="onyx",  # Or "echo" for Indian-style voice
         input=text,
         instructions="Speak in Indian accent in Hinglish. Use natural, friendly tone.",
         response_format="pcm"
     ) as response:
         await LocalAudioPlayer().play(response)
 
-# 🚀 UI and logic
-st.title("🗣️ Hinglish Voice Chatbot")
-st.markdown("🎤 Record your message below:")
+# Streamlit interface
+st.title("🎤 Hinglish Voice Chatbot")
+st.write("Record your voice and interact with the chatbot.")
 
-# 🎙️ Audio recording
-audio_bytes = st_audiorec()
+if st.button("Start Recording"):
+    audio = record_until_silence()
+    wav_path = save_to_wav(audio)
 
-if isinstance(audio_bytes, np.ndarray):
-    st.success("Audio recorded! Click 'Process Audio' to continue.")
-    if st.button("▶️ Process Audio"):
-        async def main():
-            wav_path = save_to_wav(audio_bytes)
-            st.info("Transcribing...")
-            user_text = await transcribe(wav_path)
-            st.success(f"You said: {user_text}")
+    try:
+        # Transcribe the audio
+        user_input = asyncio.run(transcribe(wav_path))
+        st.write(f"🗣️ You said: {user_input}")
 
-            st.info("Generating reply...")
-            reply = await generate_reply(user_text)
-            st.info(f"🤖 Bot: {reply}")
+        # Generate reply from GPT
+        reply = asyncio.run(generate_reply(user_input))
+        st.write(f"🤖 Bot: {reply}")
 
-            await speak(reply)
-            os.remove(wav_path)
-
-        asyncio.run(main())
-
-elif audio_bytes is None:
-    st.info("Press the mic button to record your message.")
+        # Speak the reply
+        asyncio.run(speak(reply))
+    except Exception as e:
+        st.write(f"❌ Error: {e}")
+    finally:
+        os.remove(wav_path)
