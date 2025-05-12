@@ -81,7 +81,6 @@ else:
 
     # Streamlit UI
     def main():
-        st.set_page_config(page_title="🗣️ Hinglish Voice Chatbot", layout="centered")
         st.title("🗣️ Hinglish Voice Chatbot")
         st.write("Click the button and start talking. It will listen, respond, and speak back in Hinglish.")
 
