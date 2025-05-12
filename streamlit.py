@@ -1,10 +1,12 @@
 import streamlit as st
 import numpy as np
-import scipy.io.wavfile as wavfile
 import tempfile
 import os
+import io
 from openai import AsyncOpenAI
-from streamlit_microphone import streamlit_microphone
+from pydub import AudioSegment
+import ffmpeg
+from io import BytesIO
 
 # Streamlit app setup
 st.title("🎤 Hinglish Voice Chatbot")
@@ -22,32 +24,24 @@ client = AsyncOpenAI(api_key=api_key)
 if 'conversation' not in st.session_state:
     st.session_state.conversation = []
 
-# Audio recording using browser microphone
+# Audio recording using Streamlit's native audio recorder
 def record_audio():
-    audio_bytes = streamlit_microphone(
-        start_prompt="🎤 Start speaking",
-        stop_prompt="⏹️ Stop recording",
-        just_once=True,
-        use_container_width=True
-    )
-    return audio_bytes
-
-# Save audio bytes to WAV file
-def save_to_wav(audio_bytes):
-    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
-    
-    # Convert bytes to numpy array (assuming 16-bit mono at 16kHz)
-    audio_np = np.frombuffer(audio_bytes, dtype=np.int16)
-    
-    # Write to WAV file
-    wavfile.write(temp_file.name, 16000, audio_np)
-    return temp_file.name
+    audio_bytes = st.audio_input("Speak now:", key="audio_recorder")
+    if audio_bytes:
+        # Convert webm to wav using pydub
+        audio = AudioSegment.from_file(BytesIO(audio_bytes), format="webm")
+        wav_io = BytesIO()
+        audio.export(wav_io, format="wav")
+        return wav_io.getvalue()
+    return None
 
 # Transcribe using Whisper
-async def transcribe(file_path):
-    with open(file_path, "rb") as f:
+async def transcribe(audio_bytes):
+    with tempfile.NamedTemporaryFile(suffix=".wav") as tmp:
+        tmp.write(audio_bytes)
+        tmp.seek(0)
         transcript = await client.audio.transcriptions.create(
-            file=f,
+            file=tmp,
             model="whisper-1",
             response_format="text"
         )
@@ -67,16 +61,15 @@ async def generate_reply(prompt):
 # Main chat function
 async def run_chat():
     status = st.empty()
-    status.info("🎤 Recording... Speak now")
+    status.info("🎤 Recording... Click the microphone and speak")
     
     audio_bytes = record_audio()
     
     if audio_bytes:
-        status.success("🔇 Recording stopped. Processing...")
-        wav_path = save_to_wav(audio_bytes)
+        status.success("🔇 Recording received. Processing...")
         
         try:
-            user_input = await transcribe(wav_path)
+            user_input = await transcribe(audio_bytes)
             st.session_state.conversation.append(("You", user_input))
             
             reply = await generate_reply(user_input)
@@ -86,10 +79,7 @@ async def run_chat():
             status.empty()
             
         except Exception as e:
-            st.error(f"Error: {e}")
-        finally:
-            if os.path.exists(wav_path):
-                os.remove(wav_path)
+            st.error(f"Error: {str(e)}")
 
 # Display conversation
 for speaker, text in st.session_state.conversation:
