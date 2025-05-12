@@ -2,11 +2,10 @@ import streamlit as st
 import numpy as np
 import tempfile
 import os
-import io
+import asyncio
+from io import BytesIO
 from openai import AsyncOpenAI
 from pydub import AudioSegment
-import ffmpeg
-from io import BytesIO
 
 # Streamlit app setup
 st.title("🎤 Hinglish Voice Chatbot")
@@ -58,8 +57,14 @@ async def generate_reply(prompt):
     )
     return response.choices[0].message.content.strip()
 
+# Async function runner for Streamlit
+def run_async(coro):
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    return loop.run_until_complete(coro)
+
 # Main chat function
-async def run_chat():
+def run_chat():
     status = st.empty()
     status.info("🎤 Recording... Click the microphone and speak")
     
@@ -69,10 +74,10 @@ async def run_chat():
         status.success("🔇 Recording received. Processing...")
         
         try:
-            user_input = await transcribe(audio_bytes)
+            user_input = run_async(transcribe(audio_bytes))
             st.session_state.conversation.append(("You", user_input))
             
-            reply = await generate_reply(user_input)
+            reply = run_async(generate_reply(user_input))
             st.session_state.conversation.append(("Bot", reply))
             
             st.markdown(f"**🤖 Bot:** {reply}")
@@ -90,7 +95,7 @@ for speaker, text in st.session_state.conversation:
 
 # Start chat button
 if st.button("Start Voice Chat"):
-    asyncio.run(run_chat())
+    run_chat()
 
 # Clear conversation button
 if st.button("Clear Conversation"):
