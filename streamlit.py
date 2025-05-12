@@ -1,24 +1,40 @@
+import streamlit as st
 import asyncio
 import sounddevice as sd
 import numpy as np
 import scipy.io.wavfile as wavfile
 import tempfile
 import os
-import streamlit as st
 from openai import AsyncOpenAI
 from openai.helpers import LocalAudioPlayer
 
+# Streamlit app setup
+st.title("🎤 Hinglish Voice Chatbot")
+st.write("Speak to the bot in English or Hinglish and get a friendly response!")
+
+# API Key Input (for development)
+if 'OPENAI_API_KEY' not in st.secrets:
+    api_key = st.text_input("Enter your OpenAI API Key:", type="password")
+    if not api_key:
+        st.warning("Please enter your OpenAI API key to continue")
+        st.stop()
+else:
+    api_key = st.secrets["OPENAI_API_KEY"]
+
 # Initialize OpenAI client
-client = AsyncOpenAI(api_key="add_key_here")
+client = AsyncOpenAI(api_key=api_key)
 
 # Audio settings
 SAMPLE_RATE = 16000
-THRESHOLD = 1000  # adjust as needed
-SILENCE_DURATION = 1.5  # seconds of silence to stop recording
+THRESHOLD = 1000
+SILENCE_DURATION = 1.5
+
+# Initialize session state
+if 'conversation' not in st.session_state:
+    st.session_state.conversation = []
 
 # Detects silence to stop recording
 def record_until_silence():
-    st.write("🎤 Speak now...")
     recording = []
     silence_count = 0
     block_size = 1024
@@ -36,9 +52,7 @@ def record_until_silence():
             else:
                 silence_count = 0
 
-    audio = np.concatenate(recording, axis=0)
-    st.write("🔇 Recording stopped.")
-    return audio
+    return np.concatenate(recording, axis=0)
 
 # Save numpy audio to temp WAV file
 def save_to_wav(audio_data):
@@ -56,10 +70,10 @@ async def transcribe(file_path):
         )
     return transcript.strip()
 
-# Generate Hinglish reply using GPT-4o-mini
+# Generate Hinglish reply
 async def generate_reply(prompt):
     response = await client.chat.completions.create(
-        model="gpt-4o-mini",
+        model="gpt-4",
         messages=[
             {"role": "system", "content": "You are a friendly Hinglish customer support agent."},
             {"role": "user", "content": prompt}
@@ -70,34 +84,54 @@ async def generate_reply(prompt):
 # Speak with OpenAI TTS
 async def speak(text):
     async with client.audio.speech.with_streaming_response.create(
-        model="gpt-4o-mini-tts",
-        voice="onyx",  # Or "echo" for Indian-style voice
+        model="tts-1",
+        voice="onyx",
         input=text,
         instructions="Speak in Indian accent in Hinglish. Use natural, friendly tone.",
         response_format="pcm"
     ) as response:
         await LocalAudioPlayer().play(response)
 
-# Streamlit interface
-st.title("🎤 Hinglish Voice Chatbot")
-st.write("Record your voice and interact with the chatbot.")
-
-if st.button("Start Recording"):
+# Main chat function
+async def run_chat():
+    status = st.empty()
+    status.info("🎤 Speak now... (Recording)")
+    
     audio = record_until_silence()
+    status.success("🔇 Recording stopped. Processing...")
+    
     wav_path = save_to_wav(audio)
-
+    
     try:
-        # Transcribe the audio
-        user_input = asyncio.run(transcribe(wav_path))
-        st.write(f"🗣️ You said: {user_input}")
-
-        # Generate reply from GPT
-        reply = asyncio.run(generate_reply(user_input))
-        st.write(f"🤖 Bot: {reply}")
-
-        # Speak the reply
-        asyncio.run(speak(reply))
+        user_input = await transcribe(wav_path)
+        st.session_state.conversation.append(("You", user_input))
+        
+        reply = await generate_reply(user_input)
+        st.session_state.conversation.append(("Bot", reply))
+        
+        await speak(reply)
+        status.empty()
+        
     except Exception as e:
-        st.write(f"❌ Error: {e}")
+        st.error(f"Error: {e}")
     finally:
         os.remove(wav_path)
+
+# Display conversation
+for speaker, text in st.session_state.conversation:
+    if speaker == "You":
+        st.markdown(f"**🗣️ You:** {text}")
+    else:
+        st.markdown(f"**🤖 Bot:** {text}")
+
+# Record button
+if st.button("Start Recording"):
+    if not api_key:
+        st.error("Please enter a valid OpenAI API key")
+    else:
+        asyncio.run(run_chat())
+
+# Clear conversation button
+if st.button("Clear Conversation"):
+    st.session_state.conversation = []
+    st.experimental_rerun()

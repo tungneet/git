@@ -1,6 +1,6 @@
 streamlit
-openai
 sounddevice
-scipy
 numpy
-streamlit-audiorec
+scipy
+openai
+tempfile
