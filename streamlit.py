@@ -1,63 +1,46 @@
 import streamlit as st
-import asyncio
-import sounddevice as sd
 import numpy as np
 import scipy.io.wavfile as wavfile
 import tempfile
 import os
 from openai import AsyncOpenAI
-from openai.helpers import LocalAudioPlayer
+from streamlit_microphone import streamlit_microphone
 
 # Streamlit app setup
 st.title("🎤 Hinglish Voice Chatbot")
 st.write("Speak to the bot in English or Hinglish and get a friendly response!")
 
-# API Key Input (for development)
-if 'OPENAI_API_KEY' not in st.secrets:
-    api_key = st.text_input("Enter your OpenAI API Key:", type="password")
-    if not api_key:
-        st.warning("Please enter your OpenAI API key to continue")
-        st.stop()
-else:
-    api_key = st.secrets["OPENAI_API_KEY"]
+# API Key Input
+api_key = st.text_input("Enter your OpenAI API Key:", type="password")
+if not api_key:
+    st.warning("Please enter your OpenAI API key to continue")
+    st.stop()
 
-# Initialize OpenAI client
 client = AsyncOpenAI(api_key=api_key)
-
-# Audio settings
-SAMPLE_RATE = 16000
-THRESHOLD = 1000
-SILENCE_DURATION = 1.5
 
 # Initialize session state
 if 'conversation' not in st.session_state:
     st.session_state.conversation = []
 
-# Detects silence to stop recording
-def record_until_silence():
-    recording = []
-    silence_count = 0
-    block_size = 1024
+# Audio recording using browser microphone
+def record_audio():
+    audio_bytes = streamlit_microphone(
+        start_prompt="🎤 Start speaking",
+        stop_prompt="⏹️ Stop recording",
+        just_once=True,
+        use_container_width=True
+    )
+    return audio_bytes
 
-    with sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype='int16') as stream:
-        while True:
-            block, _ = stream.read(block_size)
-            volume = np.linalg.norm(block)
-            recording.append(block)
-
-            if volume < THRESHOLD:
-                silence_count += block_size / SAMPLE_RATE
-                if silence_count >= SILENCE_DURATION:
-                    break
-            else:
-                silence_count = 0
-
-    return np.concatenate(recording, axis=0)
-
-# Save numpy audio to temp WAV file
-def save_to_wav(audio_data):
+# Save audio bytes to WAV file
+def save_to_wav(audio_bytes):
     temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
-    wavfile.write(temp_file.name, SAMPLE_RATE, audio_data)
+    
+    # Convert bytes to numpy array (assuming 16-bit mono at 16kHz)
+    audio_np = np.frombuffer(audio_bytes, dtype=np.int16)
+    
+    # Write to WAV file
+    wavfile.write(temp_file.name, 16000, audio_np)
     return temp_file.name
 
 # Transcribe using Whisper
@@ -81,41 +64,32 @@ async def generate_reply(prompt):
     )
     return response.choices[0].message.content.strip()
 
-# Speak with OpenAI TTS
-async def speak(text):
-    async with client.audio.speech.with_streaming_response.create(
-        model="tts-1",
-        voice="onyx",
-        input=text,
-        instructions="Speak in Indian accent in Hinglish. Use natural, friendly tone.",
-        response_format="pcm"
-    ) as response:
-        await LocalAudioPlayer().play(response)
-
 # Main chat function
 async def run_chat():
     status = st.empty()
-    status.info("🎤 Speak now... (Recording)")
+    status.info("🎤 Recording... Speak now")
     
-    audio = record_until_silence()
-    status.success("🔇 Recording stopped. Processing...")
+    audio_bytes = record_audio()
     
-    wav_path = save_to_wav(audio)
-    
-    try:
-        user_input = await transcribe(wav_path)
-        st.session_state.conversation.append(("You", user_input))
+    if audio_bytes:
+        status.success("🔇 Recording stopped. Processing...")
+        wav_path = save_to_wav(audio_bytes)
         
-        reply = await generate_reply(user_input)
-        st.session_state.conversation.append(("Bot", reply))
-        
-        await speak(reply)
-        status.empty()
-        
-    except Exception as e:
-        st.error(f"Error: {e}")
-    finally:
-        os.remove(wav_path)
+        try:
+            user_input = await transcribe(wav_path)
+            st.session_state.conversation.append(("You", user_input))
+            
+            reply = await generate_reply(user_input)
+            st.session_state.conversation.append(("Bot", reply))
+            
+            st.markdown(f"**🤖 Bot:** {reply}")
+            status.empty()
+            
+        except Exception as e:
+            st.error(f"Error: {e}")
+        finally:
+            if os.path.exists(wav_path):
+                os.remove(wav_path)
 
 # Display conversation
 for speaker, text in st.session_state.conversation:
@@ -124,12 +98,9 @@ for speaker, text in st.session_state.conversation:
     else:
         st.markdown(f"**🤖 Bot:** {text}")
 
-# Record button
-if st.button("Start Recording"):
-    if not api_key:
-        st.error("Please enter a valid OpenAI API key")
-    else:
-        asyncio.run(run_chat())
+# Start chat button
+if st.button("Start Voice Chat"):
+    asyncio.run(run_chat())
 
 # Clear conversation button
 if st.button("Clear Conversation"):
