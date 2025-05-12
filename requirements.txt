@@ -3,4 +3,4 @@ openai
 sounddevice
 scipy
 numpy
-streamlit-webrtc
+streamlit-audiorec
